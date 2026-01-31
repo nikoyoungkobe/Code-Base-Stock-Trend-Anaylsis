@@ -1,5 +1,10 @@
 # visualization/dashboard.py
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from dash import Dash, dcc, html
+from visualization.components.tsm_components import create_tsm_dashboard_section
 
 def create_app():
     app = Dash(__name__)
@@ -54,6 +59,9 @@ def create_app():
         ], style={'display': 'flex', 'justifyContent': 'space-between', 'marginBottom': '20px'}),
         dcc.Graph(id='stock-price-plot'),
         html.Hr(),
-        html.Div(id='plot-info-status', style={'textAlign': 'center', 'fontSize': '1.1em', 'marginTop': '10px', 'color': '#555'})
+        html.Div(id='plot-info-status', style={'textAlign': 'center', 'fontSize': '1.1em', 'marginTop': '10px', 'color': '#555'}),
+
+        # TSM Section
+        create_tsm_dashboard_section()
     ], style={'fontFamily': 'Arial, sans-serif', 'maxWidth': '1200px', 'margin': 'auto', 'padding': '20px', 'backgroundColor': '#f0f0f0', 'boxShadow': '0 4px 8px rgba(0,0,0,0.1)'})
     return app

@@ -1,10 +1,19 @@
 # visualization/callbacks.py
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from dash.dependencies import Input, Output, State
+from dash import html, ctx
 import plotly.graph_objs as go
 from datetime import datetime, timedelta
-from stock_dashboard.data.fetch_data import GetClosingPrices
-from stock_dashboard.data.macro_data import fetch_vix_data, fetch_yield_curve_data
-from stock_dashboard.config.settings import FRED_API_KEY
+from data.fetch_data import GetClosingPrices
+from data.macro_data import fetch_vix_data, fetch_yield_curve_data
+from config.settings import FRED_API_KEY
+from calculations.momentum_strategy import (
+    TimeSeriesMomentum, TSMParameters, ScenarioComparison
+)
+from visualization.components.tsm_components import create_metric_card
 
 def register_callbacks(app, stock_manager):
     @app.callback(
@@ -229,3 +238,326 @@ def register_callbacks(app, stock_manager):
         except Exception as e:
             yield_curve_fig.update_layout(title=f"Fehler beim Laden der Renditen Daten: {e}")
         return vix_fig, yield_curve_fig
+
+    # ============== TSM CALLBACKS ==============
+
+    @app.callback(
+        Output('tsm-signal-chart', 'figure'),
+        Output('tsm-returns-chart', 'figure'),
+        Output('tsm-metrics-container', 'children'),
+        Input('ticker-dropdown', 'value'),
+        Input('tsm-lookback-slider', 'value'),
+        Input('tsm-holding-dropdown', 'value'),
+        Input('tsm-vol-scaling-check', 'value'),
+        Input('tsm-vol-target-input', 'value'),
+        Input('tsm-position-type', 'value')
+    )
+    def update_tsm_analysis(
+        selected_tickers,
+        lookback_months,
+        holding_days,
+        vol_scaling_enabled,
+        vol_target,
+        position_type
+    ):
+        """Main callback for TSM analysis updates."""
+        signal_fig = go.Figure()
+        returns_fig = go.Figure()
+        metrics_html = html.P(
+            "Wählen Sie einen Ticker aus, um die Analyse zu starten.",
+            style={'textAlign': 'center', 'color': '#666'}
+        )
+
+        if not selected_tickers:
+            signal_fig.update_layout(title="Wählen Sie einen Ticker aus")
+            returns_fig.update_layout(title="Wählen Sie einen Ticker aus")
+            return signal_fig, returns_fig, metrics_html
+
+        # Use first selected ticker for TSM analysis
+        ticker = selected_tickers[0] if isinstance(selected_tickers, list) else selected_tickers
+
+        # Get price data
+        prices = stock_manager.get_price_series(ticker, 'Close')
+        if prices is None or prices.empty:
+            signal_fig.update_layout(title=f"Keine Daten für {ticker}")
+            returns_fig.update_layout(title=f"Keine Daten für {ticker}")
+            return signal_fig, returns_fig, metrics_html
+
+        # Create TSM parameters
+        params = TSMParameters(
+            lookback_months=lookback_months,
+            holding_period_days=holding_days,
+            volatility_window=21,
+            volatility_target=(vol_target or 10) / 100,
+            enable_volatility_scaling='enabled' in (vol_scaling_enabled or []),
+            position_type=position_type or 'long_cash'
+        )
+
+        # Run TSM calculation
+        try:
+            tsm = TimeSeriesMomentum(params)
+            signals_df = tsm.calculate_signals(prices)
+            returns_df = tsm.calculate_strategy_returns(signals_df)
+            metrics = tsm.calculate_performance_metrics(returns_df)
+        except Exception as e:
+            signal_fig.update_layout(title=f"Fehler: {str(e)}")
+            returns_fig.update_layout(title=f"Fehler: {str(e)}")
+            return signal_fig, returns_fig, html.P(f"Fehler: {str(e)}", style={'color': 'red'})
+
+        # Build Signal Chart
+        signal_fig = go.Figure()
+
+        # Add price line
+        signal_fig.add_trace(go.Scatter(
+            x=signals_df.index,
+            y=signals_df['close'],
+            mode='lines',
+            name='Preis',
+            line=dict(color='#333', width=1.5)
+        ))
+
+        # Add colored background for signals
+        signal_colors = signals_df['signal'].fillna(0)
+        for i in range(1, len(signals_df)):
+            if signal_colors.iloc[i] > 0:
+                color = 'rgba(0, 200, 0, 0.15)'  # Green for long
+            elif signal_colors.iloc[i] < 0:
+                color = 'rgba(200, 0, 0, 0.15)'  # Red for short
+            else:
+                continue
+
+            signal_fig.add_vrect(
+                x0=signals_df.index[i-1],
+                x1=signals_df.index[i],
+                fillcolor=color,
+                layer="below",
+                line_width=0
+            )
+
+        signal_fig.update_layout(
+            title=f'Momentum Signal für {ticker} (Lookback: {lookback_months}M)',
+            xaxis_title='Datum',
+            yaxis_title='Preis ($)',
+            template='plotly_white',
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(x=0.01, y=0.99),
+            margin=dict(l=20, r=20, t=40, b=20)
+        )
+
+        # Build Returns Chart
+        returns_fig = go.Figure()
+
+        # Strategy cumulative returns
+        returns_fig.add_trace(go.Scatter(
+            x=returns_df.index,
+            y=returns_df['cumulative_strategy'],
+            mode='lines',
+            name='TSM Strategie',
+            line=dict(color='#2196F3', width=2)
+        ))
+
+        # Benchmark cumulative returns
+        returns_fig.add_trace(go.Scatter(
+            x=returns_df.index,
+            y=returns_df['cumulative_benchmark'],
+            mode='lines',
+            name='Buy & Hold',
+            line=dict(color='#9E9E9E', width=2, dash='dash')
+        ))
+
+        # Drawdown area
+        returns_fig.add_trace(go.Scatter(
+            x=returns_df.index,
+            y=returns_df['drawdown'] * 100,
+            mode='lines',
+            name='Drawdown (%)',
+            fill='tozeroy',
+            fillcolor='rgba(255, 0, 0, 0.2)',
+            line=dict(color='rgba(255, 0, 0, 0.5)', width=1),
+            yaxis='y2'
+        ))
+
+        returns_fig.update_layout(
+            title=f'Kumulative Renditen: {ticker}',
+            xaxis_title='Datum',
+            yaxis=dict(title='Wert (Basis 100)', side='left'),
+            yaxis2=dict(title='Drawdown (%)', overlaying='y', side='right', range=[-50, 5]),
+            template='plotly_white',
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(x=0.01, y=0.99),
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis_rangeslider_visible=True
+        )
+
+        # Build Metrics Panel
+        metrics_html = html.Div([
+            create_metric_card('Total Return', f'{metrics.total_return:.1%}',
+                             '#4CAF50' if metrics.total_return > 0 else '#f44336'),
+            create_metric_card('Ann. Return', f'{metrics.annualized_return:.1%}',
+                             '#4CAF50' if metrics.annualized_return > 0 else '#f44336'),
+            create_metric_card('Sharpe Ratio', f'{metrics.sharpe_ratio:.2f}',
+                             '#4CAF50' if metrics.sharpe_ratio > 1 else '#FF9800' if metrics.sharpe_ratio > 0 else '#f44336'),
+            create_metric_card('Max Drawdown', f'{metrics.max_drawdown:.1%}', '#f44336'),
+            create_metric_card('Win Rate', f'{metrics.win_rate:.1%}',
+                             '#4CAF50' if metrics.win_rate > 0.5 else '#FF9800'),
+            create_metric_card('Trades', f'{metrics.num_trades}', '#333'),
+            create_metric_card('Sortino', f'{metrics.sortino_ratio:.2f}',
+                             '#4CAF50' if metrics.sortino_ratio > 1 else '#FF9800'),
+            create_metric_card('vs. B&H', f'{metrics.excess_return:.1%}',
+                             '#4CAF50' if metrics.excess_return > 0 else '#f44336'),
+        ], style={'textAlign': 'center'})
+
+        return signal_fig, returns_fig, metrics_html
+
+    @app.callback(
+        Output('tsm-vol-target-container', 'style'),
+        Input('tsm-vol-scaling-check', 'value')
+    )
+    def toggle_volatility_target_visibility(vol_scaling_enabled):
+        """Show/hide volatility target input based on checkbox."""
+        if 'enabled' in (vol_scaling_enabled or []):
+            return {'marginTop': '5px', 'display': 'block'}
+        return {'marginTop': '5px', 'display': 'none'}
+
+    @app.callback(
+        Output('tsm-scenarios-store', 'data'),
+        Output('tsm-scenario-table-container', 'children'),
+        Input('tsm-save-scenario-btn', 'n_clicks'),
+        Input('tsm-clear-scenarios-btn', 'n_clicks'),
+        State('tsm-scenario-name-input', 'value'),
+        State('tsm-lookback-slider', 'value'),
+        State('tsm-holding-dropdown', 'value'),
+        State('tsm-vol-scaling-check', 'value'),
+        State('tsm-vol-target-input', 'value'),
+        State('tsm-position-type', 'value'),
+        State('tsm-scenarios-store', 'data'),
+        State('ticker-dropdown', 'value')
+    )
+    def manage_scenarios(
+        save_clicks,
+        clear_clicks,
+        scenario_name,
+        lookback,
+        holding,
+        vol_scaling,
+        vol_target,
+        position_type,
+        current_scenarios,
+        selected_ticker
+    ):
+        """Handle scenario save/clear and update comparison table."""
+        if current_scenarios is None:
+            current_scenarios = {}
+
+        triggered_id = ctx.triggered_id
+
+        # Handle clear button
+        if triggered_id == 'tsm-clear-scenarios-btn':
+            return {}, html.P(
+                "Alle Szenarien gelöscht.",
+                style={'textAlign': 'center', 'color': '#666', 'fontStyle': 'italic'}
+            )
+
+        # Handle save button
+        if triggered_id == 'tsm-save-scenario-btn':
+            if not scenario_name:
+                scenario_name = f"Szenario {len(current_scenarios) + 1}"
+
+            if not selected_ticker:
+                return current_scenarios, html.P(
+                    "Bitte wählen Sie zuerst einen Ticker aus.",
+                    style={'textAlign': 'center', 'color': '#f44336'}
+                )
+
+            ticker = selected_ticker[0] if isinstance(selected_ticker, list) else selected_ticker
+            prices = stock_manager.get_price_series(ticker, 'Close')
+
+            if prices is None or prices.empty:
+                return current_scenarios, html.P(
+                    f"Keine Daten für {ticker}.",
+                    style={'textAlign': 'center', 'color': '#f44336'}
+                )
+
+            # Run TSM calculation for this scenario
+            params = TSMParameters(
+                lookback_months=lookback,
+                holding_period_days=holding,
+                volatility_target=(vol_target or 10) / 100,
+                enable_volatility_scaling='enabled' in (vol_scaling or []),
+                position_type=position_type or 'long_cash'
+            )
+
+            try:
+                tsm = TimeSeriesMomentum(params)
+                signals = tsm.calculate_signals(prices)
+                returns = tsm.calculate_strategy_returns(signals)
+                metrics = tsm.calculate_performance_metrics(returns)
+
+                # Store scenario results
+                current_scenarios[scenario_name] = {
+                    'lookback': lookback,
+                    'holding': holding,
+                    'vol_scaling': 'enabled' in (vol_scaling or []),
+                    'vol_target': vol_target,
+                    'position_type': position_type,
+                    'total_return': metrics.total_return,
+                    'sharpe': metrics.sharpe_ratio,
+                    'max_dd': metrics.max_drawdown,
+                    'win_rate': metrics.win_rate,
+                    'trades': metrics.num_trades
+                }
+            except Exception as e:
+                return current_scenarios, html.P(
+                    f"Fehler: {str(e)}",
+                    style={'textAlign': 'center', 'color': '#f44336'}
+                )
+
+        # Build comparison table
+        if not current_scenarios:
+            return current_scenarios, html.P(
+                "Noch keine Szenarien gespeichert.",
+                style={'textAlign': 'center', 'color': '#666', 'fontStyle': 'italic'}
+            )
+
+        table_header = html.Tr([
+            html.Th('Szenario', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Lookback', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Holding', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Return', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Sharpe', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Max DD', style={'padding': '8px', 'borderBottom': '2px solid #ddd'}),
+            html.Th('Win Rate', style={'padding': '8px', 'borderBottom': '2px solid #ddd'})
+        ])
+
+        table_rows = []
+        for name, data in current_scenarios.items():
+            row = html.Tr([
+                html.Td(name, style={'padding': '8px', 'borderBottom': '1px solid #eee'}),
+                html.Td(f"{data['lookback']}M", style={'padding': '8px', 'borderBottom': '1px solid #eee'}),
+                html.Td(f"{data['holding']}d", style={'padding': '8px', 'borderBottom': '1px solid #eee'}),
+                html.Td(f"{data['total_return']:.1%}", style={
+                    'padding': '8px',
+                    'borderBottom': '1px solid #eee',
+                    'color': '#4CAF50' if data['total_return'] > 0 else '#f44336'
+                }),
+                html.Td(f"{data['sharpe']:.2f}", style={'padding': '8px', 'borderBottom': '1px solid #eee'}),
+                html.Td(f"{data['max_dd']:.1%}", style={'padding': '8px', 'borderBottom': '1px solid #eee', 'color': '#f44336'}),
+                html.Td(f"{data['win_rate']:.1%}", style={'padding': '8px', 'borderBottom': '1px solid #eee'})
+            ])
+            table_rows.append(row)
+
+        table = html.Table(
+            [html.Thead(table_header), html.Tbody(table_rows)],
+            style={
+                'width': '100%',
+                'borderCollapse': 'collapse',
+                'textAlign': 'center',
+                'backgroundColor': 'white',
+                'borderRadius': '5px',
+                'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
+            }
+        )
+
+        return current_scenarios, table

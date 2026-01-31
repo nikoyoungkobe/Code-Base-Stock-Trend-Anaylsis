@@ -73,3 +73,44 @@ class GetClosingPrices:
     def get_financial_data_for_ticker(self, ticker_symbol):
         "Ruft Finanzdaten wie Umsatz, Gewinn, Schulden etc. ab"
         return self.financial_data.get(ticker_symbol)
+
+    def get_price_series(self, ticker_symbol: str, column: str = 'Close') -> pd.Series:
+        """
+        Get a specific price column as a Series.
+
+        Args:
+            ticker_symbol: Stock ticker
+            column: Price column name ('Close', 'Open', 'High', 'Low')
+
+        Returns:
+            pd.Series with DatetimeIndex, or None if not found
+        """
+        df = self.historical_data.get(ticker_symbol)
+        if df is not None and column in df.columns:
+            return df[column]
+        return None
+
+    def get_returns_for_ticker(
+        self,
+        ticker_symbol: str,
+        return_type: str = 'simple'
+    ) -> pd.Series:
+        """
+        Calculate returns for a ticker.
+
+        Args:
+            ticker_symbol: Stock ticker
+            return_type: 'simple' for arithmetic, 'log' for logarithmic
+
+        Returns:
+            pd.Series of returns with DatetimeIndex, or None if not found
+        """
+        prices = self.get_price_series(ticker_symbol, 'Close')
+        if prices is None:
+            return None
+
+        if return_type == 'log':
+            import numpy as np
+            return np.log(prices / prices.shift(1))
+        else:
+            return prices.pct_change()
