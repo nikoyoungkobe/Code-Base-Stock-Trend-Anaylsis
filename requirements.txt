@@ -1,0 +1,11 @@
+# Core dependencies
+dash==3.2.0
+plotly==6.2.0
+pandas==2.3.1
+yfinance==0.2.65
+pandas-datareader==0.10.0
+
+# Required by above packages
+Flask==3.1.1
+numpy==2.0.2
+requests==2.32.4
