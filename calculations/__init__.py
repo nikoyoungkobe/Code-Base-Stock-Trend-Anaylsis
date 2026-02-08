@@ -6,11 +6,21 @@ from .momentum_strategy import (
     TSMPerformanceMetrics,
     ScenarioComparison
 )
+from .rsi_mean_reversion import (
+    RSIMeanReversion,
+    RSIMeanReversionParameters,
+    RSIMeanReversionMetrics,
+    RSIParameterOptimizer
+)
 
 __all__ = [
     'DCFValuation',
     'TimeSeriesMomentum',
     'TSMParameters',
     'TSMPerformanceMetrics',
-    'ScenarioComparison'
+    'ScenarioComparison',
+    'RSIMeanReversion',
+    'RSIMeanReversionParameters',
+    'RSIMeanReversionMetrics',
+    'RSIParameterOptimizer',
 ]

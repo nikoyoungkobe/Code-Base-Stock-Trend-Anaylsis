@@ -16,3 +16,11 @@ START_DATE = (datetime.now() - timedelta(days=3*365)).strftime("%Y-%m-%d")
 DEBUG_MODE = True
 HOST = "127.0.0.1"
 PORT = 8050
+
+# Portfolio settings
+PORTFOLIO_CONFIG = {
+    'storage_dir': None,           # None = Default (portfolios/ im Projektverzeichnis)
+    'cache_ttl': 300,              # Preis-Cache Gültigkeit in Sekunden (5 Minuten)
+    'default_benchmark': '^GSPC',  # Standard-Benchmark (S&P 500)
+    'refresh_interval': 60000,     # UI-Refresh Intervall in Millisekunden (1 Minute)
+}
